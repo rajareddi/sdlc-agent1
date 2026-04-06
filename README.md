@@ -48,21 +48,39 @@ At each phase:\
 
     ``` bash
     cd backend
-    python -m venv venv
-    source venv/bin/activate   # (Linux/Mac)
-    venv\Scripts\activate      # (Windows)
+    python -m venv .venv
+    
+    # Activate virtual environment
+    .venv\Scripts\activate      # (Windows)
+    source .venv/bin/activate   # (Linux/Mac)
 
-    pip install fastapi uvicorn langgraph langchain-openai
+    # Install all dependencies
+    pip install -r requirements.txt
     ```
 
-2.  Run the backend server:
+2.  Configure environment variables:
+    
+    Make sure your `.env` file has the OpenAI API key:
+    ```
+    OPENAI_API_KEY=your-openai-api-key-here
+    ```
+
+3.  Run the backend server:
 
     ``` bash
-    uvicorn app:api --reload --port 8000
+    uvicorn app:app --reload --port 8000
+    ```
+    
+    Or use the quick start script (Windows):
+    ``` powershell
+    .\start.ps1
     ```
 
-This exposes APIs like: - `GET /next-phase?current=Planning` → Runs the
-next SDLC step.
+This exposes APIs like:
+- `GET /` → Health check
+- `GET /phases` → Get all SDLC phases  
+- `POST /generate-draft` → Generate AI draft for a phase
+- `POST /approve-draft` → Approve a draft
 
 ------------------------------------------------------------------------
 

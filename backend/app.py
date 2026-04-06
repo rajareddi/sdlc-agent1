@@ -4,12 +4,107 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import os
 from dotenv import load_dotenv
+import logging
+import httpx
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Load environment variables FIRST before importing opik
+import pathlib
+env_path = pathlib.Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+
+# Configure Opik environment variables BEFORE importing opik
+# This ensures Opik reads the correct URL on initialization
+OPIK_URL = os.getenv("OPIK_URL_OVERRIDE", "http://192.168.1.5:5173/api")
+OPIK_PROJECT = os.getenv("OPIK_PROJECT_NAME", "sdlc-agent")
+OPIK_WORKSPACE = os.getenv("OPIK_WORKSPACE", "default")
+
+os.environ["OPIK_URL_OVERRIDE"] = OPIK_URL
+os.environ["OPIK_PROJECT_NAME"] = OPIK_PROJECT
+os.environ["OPIK_WORKSPACE"] = OPIK_WORKSPACE
+
+# Print Opik configuration
+print("=" * 60)
+print("OPIK CONFIGURATION:")
+print(f"  OPIK_URL_OVERRIDE: {OPIK_URL}")
+print(f"  OPIK_PROJECT_NAME: {OPIK_PROJECT}")
+print(f"  OPIK_WORKSPACE: {OPIK_WORKSPACE}")
+print("=" * 60)
+
+# Monkey-patch httpx to log all requests
+_original_httpx_request = httpx.Client.request
+_original_httpx_async_request = httpx.AsyncClient.request
+
+def _logged_request(self, method, url, **kwargs):
+    print("\n" + "=" * 60)
+    print("OPIK HTTP REQUEST DEBUG:")
+    print(f"  METHOD: {method}")
+    print(f"  URL: {url}")
+    print(f"  HEADERS: {kwargs.get('headers', {})}")
+    if 'json' in kwargs:
+        import json
+        print(f"  BODY (JSON): {json.dumps(kwargs['json'], indent=2)[:2000]}")
+    if 'content' in kwargs:
+        print(f"  BODY (CONTENT): {str(kwargs['content'])[:2000]}")
+    print("=" * 60 + "\n")
+
+    response = _original_httpx_request(self, method, url, **kwargs)
+
+    print("\n" + "=" * 60)
+    print("OPIK HTTP RESPONSE DEBUG:")
+    print(f"  STATUS CODE: {response.status_code}")
+    print(f"  HEADERS: {dict(response.headers)}")
+    print(f"  BODY: {response.text[:1000] if response.text else 'empty'}")
+    print("=" * 60 + "\n")
+
+    return response
+
+async def _logged_async_request(self, method, url, **kwargs):
+    print("\n" + "=" * 60)
+    print("OPIK ASYNC HTTP REQUEST DEBUG:")
+    print(f"  METHOD: {method}")
+    print(f"  URL: {url}")
+    print(f"  HEADERS: {kwargs.get('headers', {})}")
+    if 'json' in kwargs:
+        import json
+        print(f"  BODY (JSON): {json.dumps(kwargs['json'], indent=2)[:2000]}")
+    if 'content' in kwargs:
+        print(f"  BODY (CONTENT): {str(kwargs['content'])[:2000]}")
+    print("=" * 60 + "\n")
+
+    response = await _original_httpx_async_request(self, method, url, **kwargs)
+
+    print("\n" + "=" * 60)
+    print("OPIK ASYNC HTTP RESPONSE DEBUG:")
+    print(f"  STATUS CODE: {response.status_code}")
+    print(f"  HEADERS: {dict(response.headers)}")
+    print(f"  BODY: {response.text[:1000] if response.text else 'empty'}")
+    print("=" * 60 + "\n")
+
+    return response
+
+httpx.Client.request = _logged_request
+httpx.AsyncClient.request = _logged_async_request
+
+# Now import opik after environment variables are set
+import opik
+from opik.integrations.langchain import OpikTracer
+
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 
-# Load environment variables
-load_dotenv()
+# Configure Opik client with use_local=True and IP address
+opik.configure(use_local=True)
+
+# Create OpikTracer for LangChain integration
+opik_tracer = OpikTracer(
+    project_name=OPIK_PROJECT,
+    tags=["sdlc-agent", "langgraph", "openrouter"]
+)
 
 app = FastAPI(title="SDLC Agent API", description="AI-powered SDLC with LangGraph Orchestrator")
 
@@ -23,10 +118,18 @@ app.add_middleware(
 )
 
 # Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable is required")
-llm = ChatOpenAI(api_key=OPENAI_API_KEY, model="gpt-4o-mini", temperature=0.7)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY environment variable is required")
+llm = ChatOpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
+    model="openai/gpt-4o",
+    temperature=0.7,
+    callbacks=[opik_tracer]  # Add Opik tracer as callback
+)
+
+
 
 SDLC_PHASES = [
     "Planning",
@@ -71,17 +174,17 @@ def planning_worker(state: Dict[str, Any]) -> Dict[str, Any]:
         
         Format as structured text with clear sections.
         """
-        
+
         messages = [SystemMessage(content=prompt)]
         response = llm.invoke(messages)
-        
+
         checklist = [
             "Are the goals aligned with business needs?",
-            "Is the scope realistic and sufficient?", 
+            "Is the scope realistic and sufficient?",
             "Do the resources match project size?",
             "Are risks properly identified and mitigated?"
         ]
-        
+
         return {
             **state,
             "draft_output": response.content,
@@ -106,17 +209,17 @@ def analysis_worker(state: Dict[str, Any]) -> Dict[str, Any]:
         
         Format as structured requirements document.
         """
-        
+
         messages = [SystemMessage(content=prompt)]
         response = llm.invoke(messages)
-        
+
         checklist = [
             "Are requirements clear and measurable?",
             "Are constraints properly identified?",
             "Do user stories cover all scenarios?",
             "Are acceptance criteria well-defined?"
         ]
-        
+
         return {
             **state,
             "draft_output": response.content,
@@ -142,17 +245,17 @@ def design_worker(state: Dict[str, Any]) -> Dict[str, Any]:
         
         Format as technical design document.
         """
-        
+
         messages = [SystemMessage(content=prompt)]
         response = llm.invoke(messages)
-        
+
         checklist = [
             "Is the architecture scalable and maintainable?",
             "Are security considerations addressed?",
             "Is the database design normalized?",
             "Are UI mockups user-friendly?"
         ]
-        
+
         return {
             **state,
             "draft_output": response.content,
@@ -178,17 +281,17 @@ def implementation_worker(state: Dict[str, Any]) -> Dict[str, Any]:
         
         Include code snippets where relevant.
         """
-        
+
         messages = [SystemMessage(content=prompt)]
         response = llm.invoke(messages)
-        
+
         checklist = [
             "Is code modular and reusable?",
             "Are best practices followed?",
             "Is error handling implemented?",
             "Are performance considerations addressed?"
         ]
-        
+
         return {
             **state,
             "draft_output": response.content,
@@ -331,9 +434,9 @@ def generate_draft(request: GenerateDraftRequest):
     if request.phase not in SDLC_PHASES:
         raise HTTPException(status_code=400, detail="Invalid phase name")
     
-    if not OPENAI_API_KEY or OPENAI_API_KEY == "your-openai-api-key-here":
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
-    
+    # if not OPENAI_API_KEY or OPENAI_API_KEY == "your-openai-api-key-here":
+    #     raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+    #
     try:
         # Create initial state
         initial_state = {
